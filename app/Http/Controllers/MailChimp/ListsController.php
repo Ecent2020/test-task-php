@@ -40,8 +40,6 @@ class ListsController extends Controller
      */
     public function create(Request $request): JsonResponse
     {
-        // Instantiate entity
-        $list = new MailChimpList($request->all());
         // Validate entity
         $validator = $this->getValidationFactory()->make($list->toMailChimpArray(), $list->getValidationRules());
 
@@ -55,11 +53,20 @@ class ListsController extends Controller
 
         try {
             // Save list into db
-            $this->saveEntity($list);
+           $data = List_tbl::create([
+                'fname' => $request['firstname'],
+                'lname' => $request['lastname'],
+                'cntct' => $request['contact'],
+                'email' => $request['email'],
+                'subscribed' => $request['subscribed'] ?? false,
+            ])->id;
+
             // Save list into MailChimp
-            $response = $this->mailChimp->post('lists', $list->toMailChimpArray());
-            // Set MailChimp id on the list and save list into db
-            $this->saveEntity($list->setMailChimpId($response->get('id')));
+            $list = $this->mailchimp->campaigns->create('regular', $data);
+            $this->mailchimp->campaigns->send($list['id']);
+
+           return $this->successfulResponse('Successfully Save');
+
         } catch (Exception $exception) {
             // Return error response if something goes wrong
             return $this->errorResponse(['message' => $exception->getMessage()]);
@@ -75,7 +82,7 @@ class ListsController extends Controller
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    public function remove(string $listId): JsonResponse
+    public function remove(string $listId, $email): JsonResponse
     {
         /** @var \App\Database\Entities\MailChimp\MailChimpList|null $list */
         $list = $this->entityManager->getRepository(MailChimpList::class)->find($listId);
@@ -89,9 +96,15 @@ class ListsController extends Controller
 
         try {
             // Remove list from database
-            $this->removeEntity($list);
-            // Remove list from MailChimp
-            $this->mailChimp->delete(\sprintf('lists/%s', $list->getMailChimpId()));
+            DB::table('list_tbl')
+                ->where('id', $listId)
+                ->delete();
+
+            $subscriber_hash = $MailChimp->subscriberHash($email);
+            $MailChimp->delete("lists/$listId/members/$subscriber_hash");
+
+            return $this->successfulResponse('Successfully Deleted');
+
         } catch (Exception $exception) {
             return $this->errorResponse(['message' => $exception->getMessage()]);
         }
@@ -118,7 +131,11 @@ class ListsController extends Controller
             );
         }
 
-        return $this->successfulResponse($list->toArray());
+        $data = DB::table('list_tbl')
+            ->where('id', '=', $listId)
+            ->get();
+
+        return $this->successfulResponse($data);
     }
 
     /**
@@ -129,7 +146,7 @@ class ListsController extends Controller
      *
      * @return \Illuminate\Http\JsonResponse
      */
-    public function update(Request $request, string $listId): JsonResponse
+    public function update(Request $request, string $listId, $email): JsonResponse
     {
         /** @var \App\Database\Entities\MailChimp\MailChimpList|null $list */
         $list = $this->entityManager->getRepository(MailChimpList::class)->find($listId);
@@ -157,9 +174,22 @@ class ListsController extends Controller
 
         try {
             // Update list into database
-            $this->saveEntity($list);
+            DB::table('list_tbl')
+                ->where('id', $listId)
+                ->update([
+                    'fname' => $request['firstname'],
+                    'lname' => $request['lastname'],
+                    'cntct' => $request['contact'],
+                    'email' => $request['email'],
+                ]);
+
             // Update list into MailChimp
-            $this->mailChimp->patch(\sprintf('lists/%s', $list->getMailChimpId()), $list->toMailChimpArray());
+            $member = (new Mailchimp\Member($email))->merge_fields(['FNAME' => $request['firstname'],'LNAME' => $request['lastname'],
+                'contact' => $request['contact'],'email' => $request['email']])->confirm(false);
+            Mailchimp::addUpdateMember($member);
+
+            return $this->successfulResponse('Successfully Update');
+
         } catch (Exception $exception) {
             return $this->errorResponse(['message' => $exception->getMessage()]);
         }
